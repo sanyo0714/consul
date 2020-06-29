@@ -374,10 +374,11 @@ func (s *Server) process(stream ADSStream, reqCh <-chan *envoy.DiscoveryRequest)
 }
 
 type xDSType struct {
-	typeURL   string
-	stream    ADSStream
-	req       *envoy.DiscoveryRequest
-	lastNonce string
+	typeURL                string
+	stream                 ADSStream
+	req                    *envoy.DiscoveryRequest
+	supportedProxyFeatures supportedProxyFeatures
+	lastNonce              string
 	// lastVersion is the version that was last sent to the proxy. It is needed
 	// because we don't want to send the same version more than once.
 	// req.VersionInfo may be an older version than the most recent once sent in
@@ -386,12 +387,25 @@ type xDSType struct {
 	// last version we sent with a Nack then req.VersionInfo will be the older
 	// version it's hanging on to.
 	lastVersion  uint64
-	resources    func(cfgSnap *proxycfg.ConfigSnapshot, token string) ([]proto.Message, error)
+	resources    func(cinfo connectionInfo, cfgSnap *proxycfg.ConfigSnapshot) ([]proto.Message, error)
 	allowEmptyFn func(cfgSnap *proxycfg.ConfigSnapshot) bool
+}
+
+// connectionInfo represents details specific to this connection
+type connectionInfo struct {
+	Token         string
+	ProxyFeatures supportedProxyFeatures
 }
 
 func (t *xDSType) Recv(req *envoy.DiscoveryRequest) {
 	if t.lastNonce == "" || t.lastNonce == req.GetResponseNonce() {
+		if t.req == nil {
+			// Only determine supported proxy features once. This is needed
+			// when set_node_on_first_message_only=true is configured for ADS
+			// since the node metadata we pivot on is only present on the FIRST
+			// discovery request.
+			t.supportedProxyFeatures = determineSupportedProxyFeatures(req)
+		}
 		t.req = req
 	}
 }
@@ -404,7 +418,12 @@ func (t *xDSType) SendIfNew(cfgSnap *proxycfg.ConfigSnapshot, version uint64, no
 		// Already sent this version
 		return nil
 	}
-	resources, err := t.resources(cfgSnap, tokenFromContext(t.stream.Context()))
+
+	cinfo := connectionInfo{
+		Token:         tokenFromContext(t.stream.Context()),
+		ProxyFeatures: t.supportedProxyFeatures,
+	}
+	resources, err := t.resources(cinfo, cfgSnap)
 	if err != nil {
 		return err
 	}
