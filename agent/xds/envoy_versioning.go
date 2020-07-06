@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"regexp"
 
-	envoy "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	envoycore "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	"github.com/hashicorp/go-version"
 )
@@ -20,8 +19,8 @@ type supportedProxyFeatures struct {
 	RouterMatchSafeRegex bool // use safe_regex instead of regex in http.router rules
 }
 
-func determineSupportedProxyFeatures(req *envoy.DiscoveryRequest) supportedProxyFeatures {
-	version := determineEnvoyVersion(req)
+func determineSupportedProxyFeatures(node *envoycore.Node) supportedProxyFeatures {
+	version := determineEnvoyVersionFromNode(node)
 	if version == nil {
 		return supportedProxyFeatures{}
 	}
@@ -34,11 +33,11 @@ func determineSupportedProxyFeatures(req *envoy.DiscoveryRequest) supportedProxy
 // example: 1580db37e9a97c37e410bad0e1507ae1a0fd9e77/1.12.4/Clean/RELEASE/BoringSSL
 var buildVersionPattern = regexp.MustCompile(`^[a-f0-9]{40}/([^/]+)/Clean/RELEASE/BoringSSL$`)
 
-func determineEnvoyVersion(req *envoy.DiscoveryRequest) *version.Version {
-	return determineEnvoyVersionFromNode(req.Node)
-}
-
 func determineEnvoyVersionFromNode(node *envoycore.Node) *version.Version {
+	if node == nil {
+		return nil
+	}
+
 	if node.UserAgentVersionType == nil {
 		if node.BuildVersion == "" {
 			return nil

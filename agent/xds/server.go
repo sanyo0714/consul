@@ -8,6 +8,7 @@ import (
 	"time"
 
 	envoy "github.com/envoyproxy/go-control-plane/envoy/api/v2"
+	envoycore "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	envoyauthz "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2"
 	envoyauthzalpha "github.com/envoyproxy/go-control-plane/envoy/service/auth/v2alpha"
 	envoydisco "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v2"
@@ -196,12 +197,16 @@ func (s *Server) process(stream ADSStream, reqCh <-chan *envoy.DiscoveryRequest)
 	var configVersion uint64
 
 	// Loop state
-	var cfgSnap *proxycfg.ConfigSnapshot
-	var req *envoy.DiscoveryRequest
-	var ok bool
-	var stateCh <-chan *proxycfg.ConfigSnapshot
-	var watchCancel func()
-	var proxyID structs.ServiceID
+	var (
+		cfgSnap       *proxycfg.ConfigSnapshot
+		req           *envoy.DiscoveryRequest
+		node          *envoycore.Node
+		proxyFeatures supportedProxyFeatures
+		ok            bool
+		stateCh       <-chan *proxycfg.ConfigSnapshot
+		watchCancel   func()
+		proxyID       structs.ServiceID
+	)
 
 	// need to run a small state machine to get through initial authentication.
 	var state = stateInit
@@ -303,8 +308,14 @@ func (s *Server) process(stream ADSStream, reqCh <-chan *envoy.DiscoveryRequest)
 			if req.TypeUrl == "" {
 				return status.Errorf(codes.InvalidArgument, "type URL is required for ADS")
 			}
+
+			if node == nil && req.Node != nil {
+				node = req.Node
+				proxyFeatures = determineSupportedProxyFeatures(req.Node)
+			}
+
 			if handler, ok := handlers[req.TypeUrl]; ok {
-				handler.Recv(req)
+				handler.Recv(req, node, proxyFeatures)
 			}
 		case cfgSnap = <-stateCh:
 			// We got a new config, update the version counter
@@ -374,11 +385,12 @@ func (s *Server) process(stream ADSStream, reqCh <-chan *envoy.DiscoveryRequest)
 }
 
 type xDSType struct {
-	typeURL                string
-	stream                 ADSStream
-	req                    *envoy.DiscoveryRequest
-	supportedProxyFeatures supportedProxyFeatures
-	lastNonce              string
+	typeURL       string
+	stream        ADSStream
+	req           *envoy.DiscoveryRequest
+	node          *envoycore.Node
+	proxyFeatures supportedProxyFeatures
+	lastNonce     string
 	// lastVersion is the version that was last sent to the proxy. It is needed
 	// because we don't want to send the same version more than once.
 	// req.VersionInfo may be an older version than the most recent once sent in
@@ -397,16 +409,11 @@ type connectionInfo struct {
 	ProxyFeatures supportedProxyFeatures
 }
 
-func (t *xDSType) Recv(req *envoy.DiscoveryRequest) {
+func (t *xDSType) Recv(req *envoy.DiscoveryRequest, node *envoycore.Node, proxyFeatures supportedProxyFeatures) {
 	if t.lastNonce == "" || t.lastNonce == req.GetResponseNonce() {
-		if t.req == nil {
-			// Only determine supported proxy features once. This is needed
-			// when set_node_on_first_message_only=true is configured for ADS
-			// since the node metadata we pivot on is only present on the FIRST
-			// discovery request.
-			t.supportedProxyFeatures = determineSupportedProxyFeatures(req)
-		}
 		t.req = req
+		t.node = node
+		t.proxyFeatures = proxyFeatures
 	}
 }
 
@@ -421,7 +428,7 @@ func (t *xDSType) SendIfNew(cfgSnap *proxycfg.ConfigSnapshot, version uint64, no
 
 	cinfo := connectionInfo{
 		Token:         tokenFromContext(t.stream.Context()),
-		ProxyFeatures: t.supportedProxyFeatures,
+		ProxyFeatures: t.proxyFeatures,
 	}
 	resources, err := t.resources(cinfo, cfgSnap)
 	if err != nil {
