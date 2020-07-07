@@ -548,10 +548,10 @@ func TestAutoConfig_updateTLSCertificatesInConfig(t *testing.T) {
 
 func TestAutoConfig_updateACLsInConfig(t *testing.T) {
 	type testCase struct {
-		config   Config
-		expected config.Config
+		config         Config
+		expected       config.Config
 		expectACLToken bool
-	   err error
+		err            error
 	}
 
 	const (
@@ -623,10 +623,10 @@ func TestAutoConfig_updateACLsInConfig(t *testing.T) {
 			config: Config{
 				Datacenter:        testDC,
 				PrimaryDatacenter: "somewhere-else",
-				ACLsEnabled: true,
+				ACLsEnabled:       true,
 			},
 			expectACLToken: true,
-			err: fmt.Errorf("Agent Auto Configuration requires local token usage to be enabled in this datacenter"),
+			err:            fmt.Errorf("Agent Auto Configuration requires local token usage to be enabled in this datacenter"),
 		},
 	}
 	for name, tcase := range cases {
